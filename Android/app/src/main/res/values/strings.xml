@@ -239,6 +239,8 @@
     <string name="enable_anland_description">Show a Wayland desktop in the Anland app</string>
     <string name="launch_anland_window">Launch Anland</string>
     <string name="anland_not_installed">Not available. Needs the Anland app installed.</string>
+    <string name="anland_needs_gpu">Needs GPU Access or Hardware Access.</string>
+    <string name="anland_replaces_x11">Off while Anland Display is on. A container uses one display path.</string>
     <string name="auto_boot_priority">Auto Boot Priority</string>
     <string name="auto_boot_priority_description">Order in which run-at-boot containers start</string>
     <string name="auto_boot_priority_hint">Drag to reorder. Containers start top to bottom - put a gateway (e.g. OpenWRT) first so it boots before the containers that route through it.</string>

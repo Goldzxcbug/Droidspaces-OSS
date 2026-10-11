@@ -47,13 +47,17 @@ data class HostCapabilities(
      */
     fun coerce(s: ContainerConfigState): ContainerConfigState {
         val mode = if (s.netMode in supportedNetModes()) s.netMode else "host"
+        val hwAccess = s.enableHwAccess && has("devtmpfs")
+        // Anland needs the GPU nodes and takes the display path Termux:X11 would use.
+        val anland = s.enableAnland && has("anland") && (hwAccess || s.enableGpuMode)
         return s.copy(
             netMode = mode,
-            enableHwAccess = s.enableHwAccess && has("devtmpfs"),
+            enableHwAccess = hwAccess,
             volatileMode = s.volatileMode && has("overlayfs"),
             allowSandboxing = s.allowSandboxing && has("user_ns"),
             forceCgroupv1 = s.forceCgroupv1 && has("cgroup2"),
-            enableTermuxX11 = s.enableTermuxX11 && has("termux") && has("termux_x11"),
+            enableAnland = anland,
+            enableTermuxX11 = s.enableTermuxX11 && !anland && has("termux") && has("termux_x11"),
             enableVirgl = s.enableVirgl && has("termux"),
             enablePulseaudio = s.enablePulseaudio && has("termux"),
             disableIPv6 = s.disableIPv6 || (mode == "nat" && !has("ipv6_nat"))
@@ -89,7 +93,8 @@ data class HostCapabilities(
          */
         private fun appFlags(context: Context) = mapOf(
             "termux" to installed(context, "com.termux"),
-            "termux_x11" to installed(context, "com.termux.x11")
+            "termux_x11" to installed(context, "com.termux.x11"),
+            "anland" to installed(context, "com.anland.consumer")
         )
 
         private fun installed(context: Context, pkg: String) =
