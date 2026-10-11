@@ -29,15 +29,11 @@ import com.droidspaces.app.util.ContainerSystemdManager
 import com.droidspaces.app.util.ContainerProcdManager
 import com.droidspaces.app.util.ContainerOpenRCManager
 import com.droidspaces.app.util.ContainerDiskUsageManager
-import com.droidspaces.app.util.AnlandUtils
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.droidspaces.app.util.AnimationUtils
 import com.droidspaces.app.util.IconUtils
-import com.droidspaces.app.ui.component.TintedActionButton
 import com.droidspaces.app.ui.util.LoadingIndicator
-import com.droidspaces.app.ui.util.showError
-import androidx.compose.runtime.rememberCoroutineScope
 import com.droidspaces.app.ui.util.LoadingSize
 import androidx.compose.ui.platform.LocalContext
 import com.droidspaces.app.R
@@ -69,7 +65,6 @@ fun ContainerDetailsScreen(
 ) {
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
-    val scope = rememberCoroutineScope()
     var refreshTrigger by remember { mutableIntStateOf(0) }
 
     // Pre-load cached OS info for instant display - zero delay
@@ -258,14 +253,7 @@ fun ContainerDetailsScreen(
             item(key = "terminal_${container.name}") {
                 TerminalCard(
                     containerName = container.name,
-                    onOpenTerminal = onNavigateToTerminal,
-                    // Socket path comes with the heartbeat; presence gates the button
-                    anlandEnabled = container.enableAnland && osInfo?.anlandSocket != null,
-                    onLaunchAnland = {
-                        val sock = osInfo?.anlandSocket
-                        if (sock != null && !AnlandUtils.launchWindow(context, container.name, sock))
-                            scope.showError(snackbarHostState, context.getString(R.string.anland_not_installed))
-                    }
+                    onOpenTerminal = onNavigateToTerminal
                 )
             }
 
@@ -305,7 +293,6 @@ private fun hasOSInfoChanged(old: ContainerOSInfoManager.OSInfo, new: ContainerO
            old.id != new.id ||
            old.hostname != new.hostname ||
            old.ipAddress != new.ipAddress ||
-           old.anlandSocket != new.anlandSocket ||
            old.uptime != new.uptime ||
            old.cpuUsage != new.cpuUsage ||
            old.ramUsedKb != new.ramUsedKb ||
@@ -385,8 +372,6 @@ private fun IdentityToken(
 private fun TerminalCard(
     containerName: String,
     onOpenTerminal: () -> Unit,
-    anlandEnabled: Boolean = false,
-    onLaunchAnland: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -477,16 +462,6 @@ private fun TerminalCard(
                     fontWeight = FontWeight.SemiBold
                 )
             }
-        }
-
-        // Shown once the backend has recorded a live display socket.
-        if (anlandEnabled) {
-            TintedActionButton(
-                label = context.getString(R.string.launch_anland_window),
-                icon = Icons.Default.DesktopWindows,
-                onClick = onLaunchAnland,
-                modifier = Modifier.fillMaxWidth()
-            )
         }
       }
     }
