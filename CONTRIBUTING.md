@@ -487,7 +487,7 @@ validation. Prefer the wrappers.
 
 The debug channel is a bracket prefix, not a flag. A message starting with `[DEBUG]`,
 `[NET]`, `[CGROUP]`, `[SEC]`, `[IPT]`, `[VIRT]`, `[GPU]`, `[FW]`, `[DHCP]`, `[X11]`,
-`[VirGL]`, or `[PulseAudio]` goes to the log file but not the terminal. Use that, do not add
+`[VirGL]`, `[PulseAudio]` or `[Anland]` goes to the log file but not the terminal. Use that, do not add
 a verbosity flag.
 
 ### C backend: strings

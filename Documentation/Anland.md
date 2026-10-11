@@ -63,9 +63,8 @@ Install the APK from the [latest Anland release](https://github.com/superturtlee
 
 In the container's configuration:
 
-1. Turn on **GPU Access**.
-2. Turn on **Anland Display**. On the CLI that is `--anland`, key `enable_anland`.
-3. Turn off **Configure Termux:X11**. The two display paths set conflicting variables and services, so a container uses one or the other.
+1. Turn on **GPU Access**. The Anland switch stays greyed out until it is on, or Hardware Access is.
+2. Turn on **Anland Display**. On the CLI that is `--anland`, key `enable_anland`. Turning it on turns **Configure Termux:X11** off: the two display paths set conflicting variables and services, so a container uses one or the other.
 
 Three more settings are worth knowing:
 
@@ -73,7 +72,7 @@ Three more settings are worth knowing:
 - **Allow Sandboxing** should be on for a full desktop such as KDE Plasma. Without it Plasma on Wayland can get slow or stop responding. Privileged mode is not needed, and neither is any of its tags.
 - **SELinux Permissive** should stay off. Try enforcing first; turn permissive on only if Anland fails to start or draw on your device, and treat that as a workaround while you report it.
 
-Start the container. When the backend is up, the container's card on the **Panel** tab shows a **Launch Anland** button, which opens the desktop in the Anland app.
+Start the container. As soon as the broker's socket is recorded, which happens as the container starts, its card on the **Panel** tab and its details page show a **Launch Anland** button, which opens the desktop in the Anland app. The desktop itself appears once the compositor inside the container has started.
 
 ---
 
