@@ -1,149 +1,100 @@
 /*
  * Droidspaces - anland display daemon integration
  *
- * Embeds the anland broker daemon (libdisplay_daemon, vendored alongside this
- * file) into the container lifecycle. For a container with anland enabled we:
- *   - generate a per-container host socket path under <workspace>/anland,
- *   - fork a persistent process that runs the daemon's epoll loop on it,
- *   - record the pid and the socket path in the Pids dir so the app can find
- *     and stop it, and
- *   - bind-mount the socket onto the container's /run/display.sock
- * (post-pivot).
+ * A container with anland enabled gets its own broker daemon: a forked process
+ * that runs the vendored display daemon's epoll loop on a per-container socket
+ * under the workspace. The Android consumer app reaches that socket through
+ * its root helper, and the patched compositor inside the container reaches it
+ * at /run/display.sock, where the host socket is bind-mounted after pivot. The
+ * daemon brokers their handshake and nothing else.
  *
- * The Android consumer app connects to the same socket (via its root fd-helper)
- * and a patched KWin ("producer") inside the container connects to
- * /run/display.sock; the daemon just brokers their handshake.
+ * Modeled on src/android/x11.c. Unlike the X server, which is one global
+ * process, every container has its own daemon, so the pid file and the socket
+ * record are keyed by container name.
  *
- * Modeled on src/android/x11.c. Unlike X11 (a single global server) each
- * container gets its own daemon, so the pid / socket-path files are keyed by
- * container name.
- *
+ * Copyright (C) 2026 ravindu644 <droidcasts@protonmail.com>
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-#define _GNU_SOURCE
 #include "droidspace.h"
-
-#include <fcntl.h>
-#include <signal.h>
-#include <stdio.h>
-#include <string.h>
-#include <unistd.h>
 
 #include "display_daemon.h"
 
-#include <sys/stat.h>
+/* Per-container record filenames in the Pids dir. Their extensions are
+ * deliberately not DS_EXT_PID: every Pids scanner treats <x>.pid as a container
+ * named x, so a daemon pid file named <name>.anland.pid would show up as a
+ * phantom container and be pruned as such when the daemon dies. */
+#define ANLAND_PID_EXT ".apid"
+#define ANLAND_SOCK_EXT ".asock"
 
-/* Host directory for the per-container display sockets: /data/local/tmp, which
- * always exists and is the same directory the consumer app already uses for its
- * default socket, so the consumer can reach it without the permission problems
- * of a workspace-private path. The socket files are named anland-<uuid>.sock
- * directly in this dir (no subdirectory to create). */
-#define ANLAND_SOCK_DIR "/data/local/tmp"
-
-/* Per-container Pids-dir filenames (keyed by container name). */
-static void anland_pid_file(const struct ds_config *cfg, char *buf, size_t n) {
-  snprintf(buf, n, "%s.anland.pid", cfg->container_name);
-}
-static void anland_sock_file(const struct ds_config *cfg, char *buf, size_t n) {
-  snprintf(buf, n, "%s.anland", cfg->container_name);
+static void anland_record_name(const struct ds_config *cfg, const char *ext,
+                               char *buf, size_t n) {
+  char safe[NAME_MAX + 1];
+  sanitize_container_name(cfg->container_name, safe, sizeof(safe));
+  snprintf(buf, n, "%s%s", safe, ext);
 }
 
 /* anland is per-container, so a daemon is never shared between containers:
  * ds_global_daemon_stop's "keep alive for others" check is always false. */
 static int anland_never_needed(void) { return 0; }
 
-/* daemon child */
+/* The vendored daemon installs no signal handlers; the host process owns
+ * shutdown. SIGTERM from ds_global_daemon_stop has to reach the loop flag, or
+ * daemon_destroy never runs and the socket is left behind. */
+static daemon_ctx *g_anland_ctx;
+static void anland_on_term(int sig) {
+  (void)sig;
+  daemon_stop(g_anland_ctx);
+}
 
 /*
- * The forked daemon process. Runs the vendored libdisplay_daemon epoll loop
- * in-process (the library is linked into this binary, so no execv is needed).
- * Never returns: always _exit()s.
+ * The forked daemon process. The vendored daemon is linked into this binary,
+ * so there is no exec: close every inherited descriptor above stderr, bind the
+ * socket, report readiness, then run the loop until SIGTERM. ready_fd is the
+ * write end of ds_spawn_daemon's pipe: closed on success, written on failure.
  */
-static void anland_daemon_child(int out_fd, const char *sock_path) {
-  /* Detach from the launcher's session and make the daemon robust/persistent
-   * (SIGTERM is left default so ds_global_daemon_stop can kill it). */
-  setsid();
-  signal(SIGHUP, SIG_IGN);
-  signal(SIGINT, SIG_IGN);
-  signal(SIGQUIT, SIG_IGN);
-  signal(SIGPIPE, SIG_IGN);
-  ds_oom_protect();
+static void anland_child(int ready_fd, void *user_data) {
+  const char *sock_path = user_data;
 
-  /* stdout/stderr -> log pipe, stdin -> /dev/null */
+  ds_daemon_child_preamble();
+  setsid();
+  signal(SIGTERM, anland_on_term);
+
+  /* Nothing the launcher had open belongs to the daemon: the console PTY pair,
+   * image and netlink descriptors, the request pipes in daemon mode. Without an
+   * exec nothing closes them for us. */
+  int keep = ready_fd;
+  for (int fd = 3; fd < 1024; fd++)
+    if (fd != keep)
+      close(fd);
   int devnull = open("/dev/null", O_RDONLY);
   if (devnull >= 0) {
     dup2(devnull, STDIN_FILENO);
     close(devnull);
   }
-  dup2(out_fd, STDOUT_FILENO);
-  dup2(out_fd, STDERR_FILENO);
-  close(out_fd);
 
-  daemon_ctx *ctx = NULL;
-  if (daemon_create(&ctx, sock_path) < 0) {
-    /* stderr is the log relay pipe here, and ds_error bypasses the [Anland]
-     * terminal filter, so this still reaches the log. _exit, not ds_die: the
-     * forked child must not flush the parent's stdio or run its atexit list. */
-    ds_error("[Anland] failed to bind %s", sock_path);
+  if (daemon_create(&g_anland_ctx, sock_path) < 0) {
+    if (write(ready_fd, "\x01", 1) < 0) { /* ignore */
+    }
     _exit(1);
   }
-  daemon_run(ctx); /* blocks until SIGTERM-triggered exit via the loop flag */
-  daemon_destroy(ctx); /* closes clients, unlinks the socket */
+  close(ready_fd);
+  daemon_run(g_anland_ctx);
+  daemon_destroy(g_anland_ctx);
   _exit(0);
 }
 
-/* Fork the daemon child and a log-relay grandchild. log_path is resolved by
- * ds_spawn_log_relay() relative to get_logs_dir(), so it must be relative
- * (e.g. "<name>/anland") and its parent dir must already exist.
- * Returns the daemon PID, or -1 on error. */
-static pid_t spawn_anland_daemon(const char *sock_path, const char *log_path) {
-  int pipefd[2];
-  if (pipe(pipefd) < 0) {
-    ds_warn("[Anland] pipe: %s", strerror(errno));
-    return -1;
-  }
-
-  pid_t child = fork();
-  if (child < 0) {
-    ds_warn("[Anland] fork: %s", strerror(errno));
-    close(pipefd[0]);
-    close(pipefd[1]);
-    return -1;
-  }
-  if (child == 0) {
-    close(pipefd[0]);
-    anland_daemon_child(pipefd[1], sock_path); /* never returns */
-    _exit(1);
-  }
-
-  /* Parent: hand the read end to a log relay; the daemon child holds the only
-   * write end, so the relay sees EOF when the daemon exits. */
-  close(pipefd[1]);
-  ds_spawn_log_relay(pipefd[0], log_path, "anland");
-  return child;
-}
-
-/* Load the recorded per-container socket path (Pids/<name>.anland) into
- * cfg->anland_sock. No-op when the file is missing/empty. Needed because the
- * socket path is runtime-only (not persisted to container.config), so a cfg
- * loaded from disk at stop time has an empty anland_sock. */
+/* Load the recorded socket path (Pids/<name>.asock) into cfg->anland_sock.
+ * The path is runtime state, not part of container.config, so a cfg loaded
+ * from disk at stop or show time has it empty. */
 void ds_anland_load_sock(struct ds_config *cfg) {
-  char sockfile[NAME_MAX + 16], rec[PATH_MAX];
-  anland_sock_file(cfg, sockfile, sizeof(sockfile));
-  snprintf(rec, sizeof(rec), "%s/%s", get_pids_dir(), sockfile);
-  int fd = open(rec, O_RDONLY | O_CLOEXEC);
-  if (fd < 0)
-    return;
-  ssize_t r = read(fd, cfg->anland_sock, sizeof(cfg->anland_sock) - 1);
-  close(fd);
-  if (r > 0) {
-    cfg->anland_sock[r] = '\0';
-    cfg->anland_sock[strcspn(cfg->anland_sock, "\r\n")] = '\0';
-  }
+  char name[NAME_MAX + 16], rec[PATH_MAX];
+  anland_record_name(cfg, ANLAND_SOCK_EXT, name, sizeof(name));
+  snprintf(rec, sizeof(rec), "%s/%s", get_pids_dir(), name);
+  if (read_file(rec, cfg->anland_sock, sizeof(cfg->anland_sock)) < 0)
+    cfg->anland_sock[0] = '\0';
+  cfg->anland_sock[strcspn(cfg->anland_sock, "\r\n")] = '\0';
 }
-
-/* public API */
 
 int ds_anland_daemon_start(struct ds_config *cfg) {
   if (!cfg || !cfg->anland || !is_android())
@@ -154,10 +105,10 @@ int ds_anland_daemon_start(struct ds_config *cfg) {
   }
 
   char pidfile[NAME_MAX + 16], sockfile[NAME_MAX + 16];
-  anland_pid_file(cfg, pidfile, sizeof(pidfile));
-  anland_sock_file(cfg, sockfile, sizeof(sockfile));
+  anland_record_name(cfg, ANLAND_PID_EXT, pidfile, sizeof(pidfile));
+  anland_record_name(cfg, ANLAND_SOCK_EXT, sockfile, sizeof(sockfile));
 
-  /* Reuse an existing live daemon (ds_daemon_read_pid verifies liveness). */
+  /* A restart from inside the container keeps the daemon; reuse it. */
   pid_t existing = ds_daemon_read_pid(pidfile);
   if (existing > 0) {
     cfg->anland_pid = existing;
@@ -166,46 +117,40 @@ int ds_anland_daemon_start(struct ds_config *cfg) {
     return 1;
   }
 
-  /* Generated per-container socket path, directly in /data/local/tmp. */
+  /* The socket lives in the workspace's Net dir, which only root can write, so
+   * nobody can swap it for a symlink between bind, chmod and the bind mount.
+   * The name is random so the path is not guessable from outside. */
   char uuid[DS_UUID_LEN + 1];
   if (generate_uuid(uuid, sizeof(uuid)) < 0) {
     ds_error("[Anland] failed to generate socket name");
     return -1;
   }
-  snprintf(cfg->anland_sock, sizeof(cfg->anland_sock),
-           ANLAND_SOCK_DIR "/anland-%s.sock", uuid);
-
+  snprintf(cfg->anland_sock, sizeof(cfg->anland_sock), "%s/anland-%s.sock",
+           get_net_dir(), uuid);
   ds_log("[Anland] launching display daemon on %s", cfg->anland_sock);
 
-  /* ds_spawn_log_relay() resolves its log-file argument relative to
-   * get_logs_dir() (== <workspace>/Logs) and only O_CREATs the final path
-   * component, so we must (a) pre-create the per-container subdir and (b) pass
-   * a RELATIVE "<name>/anland" - passing an absolute path would double-prefix
-   * to <Logs>/<Logs>/... whose parents don't exist, and the relay would fail
-   * its open() and silently exit without writing anything. */
-  char safe_log_name[256];
-  sanitize_container_name(cfg->container_name, safe_log_name,
-                          sizeof(safe_log_name));
+  /* The log relay resolves its file relative to get_logs_dir(); the container's
+   * own log directory is already there from ds_open_container_log. */
+  char safe[NAME_MAX + 1], log_rel[NAME_MAX + 16];
+  sanitize_container_name(cfg->container_name, safe, sizeof(safe));
+  snprintf(log_rel, sizeof(log_rel), "%s/anland", safe);
 
-  char log_rel[288];
-  snprintf(log_rel, sizeof(log_rel), "%.256s/anland", safe_log_name);
-
-  pid_t child = spawn_anland_daemon(cfg->anland_sock, log_rel);
-  if (child <= 0)
+  pid_t child = ds_spawn_daemon(anland_child, cfg->anland_sock, log_rel,
+                                "anland", "Anland");
+  if (child <= 0) {
+    cfg->anland_sock[0] = '\0';
     return -1;
+  }
+
+  /* The compositor inside the container may run as a normal user, and connect
+   * needs write permission on the socket inode. */
+  chmod(cfg->anland_sock, 0666);
 
   cfg->anland_pid = child;
   ds_daemon_write_pid(pidfile, child);
-
-  /* Record the socket path so the app (and a later restart) can find it. */
   char rec[PATH_MAX];
   snprintf(rec, sizeof(rec), "%s/%s", get_pids_dir(), sockfile);
   write_file_atomic(rec, cfg->anland_sock);
-
-  /* Give the daemon a moment to bind, then loosen the socket perms so the
-   * consumer app can connect to it. */
-  wait_for_socket_or_death(child, cfg->anland_sock, 2000, 20000);
-  chmod(cfg->anland_sock, 0666);
   return 0;
 }
 
@@ -213,11 +158,9 @@ void ds_anland_daemon_stop(struct ds_config *cfg) {
   if (!cfg)
     return;
   char pidfile[NAME_MAX + 16], sockfile[NAME_MAX + 16];
-  anland_pid_file(cfg, pidfile, sizeof(pidfile));
-  anland_sock_file(cfg, sockfile, sizeof(sockfile));
+  anland_record_name(cfg, ANLAND_PID_EXT, pidfile, sizeof(pidfile));
+  anland_record_name(cfg, ANLAND_SOCK_EXT, sockfile, sizeof(sockfile));
 
-  /* Recover the socket path from the Pids file if this cfg was loaded from disk
-   * (anland_sock is runtime-only), so ds_global_daemon_stop can unlink it. */
   if (cfg->anland_sock[0] == '\0')
     ds_anland_load_sock(cfg);
 
@@ -227,8 +170,8 @@ void ds_anland_daemon_stop(struct ds_config *cfg) {
   ds_daemon_remove_pid(sockfile);
 }
 
-/* socket bridge */
-
+/* Post-pivot: bind-mount the host socket to /run/display.sock, where the
+ * patched compositor expects it. */
 int ds_setup_anland_socket(struct ds_config *cfg) {
   if (!cfg || !cfg->anland || !is_android())
     return 0;
@@ -237,15 +180,12 @@ int ds_setup_anland_socket(struct ds_config *cfg) {
     return 0;
   }
 
-  /* Post-pivot: the host socket is reachable under /.old_root. */
   char src[PATH_MAX + 32];
   snprintf(src, sizeof(src), "/.old_root%s", cfg->anland_sock);
   if (access(src, F_OK) != 0) {
     ds_warn("[Anland] host socket not found at %s - skipping bind mount", src);
     return 0;
   }
-
-  mkdir_p("/run", 0755);
   if (ds_bind_mount_socket(src, "/run/display.sock", 0, "anland") < 0)
     return 0;
 
