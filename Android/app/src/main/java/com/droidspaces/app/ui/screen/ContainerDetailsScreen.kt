@@ -34,7 +34,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.droidspaces.app.util.AnimationUtils
 import com.droidspaces.app.util.IconUtils
+import com.droidspaces.app.ui.component.TintedActionButton
 import com.droidspaces.app.ui.util.LoadingIndicator
+import com.droidspaces.app.ui.util.showError
+import androidx.compose.runtime.rememberCoroutineScope
 import com.droidspaces.app.ui.util.LoadingSize
 import androidx.compose.ui.platform.LocalContext
 import com.droidspaces.app.R
@@ -66,6 +69,7 @@ fun ContainerDetailsScreen(
 ) {
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
     var refreshTrigger by remember { mutableIntStateOf(0) }
 
     // Pre-load cached OS info for instant display - zero delay
@@ -258,7 +262,9 @@ fun ContainerDetailsScreen(
                     // Socket path comes with the heartbeat; presence gates the button
                     anlandEnabled = container.enableAnland && osInfo?.anlandSocket != null,
                     onLaunchAnland = {
-                        osInfo?.anlandSocket?.let { AnlandUtils.launchWindow(context, container.name, it) }
+                        val sock = osInfo?.anlandSocket
+                        if (sock != null && !AnlandUtils.launchWindow(context, container.name, sock))
+                            scope.showError(snackbarHostState, context.getString(R.string.anland_not_installed))
                     }
                 )
             }
@@ -412,7 +418,7 @@ private fun TerminalCard(
     ) {
       Column(
           modifier = Modifier.fillMaxWidth().padding(20.dp),
-          verticalArrangement = Arrangement.spacedBy(14.dp)
+          verticalArrangement = Arrangement.spacedBy(12.dp)
       ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -473,28 +479,14 @@ private fun TerminalCard(
             }
         }
 
-        // Launch the anland desktop window, shown only when this container has
-        // the anland display daemon enabled and a live socket recorded.
+        // Shown once the backend has recorded a live display socket.
         if (anlandEnabled) {
-            Button(
+            TintedActionButton(
+                label = context.getString(R.string.launch_anland_window),
+                icon = Icons.Default.DesktopWindows,
                 onClick = onLaunchAnland,
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                )
-            ) {
-                Icon(
-                    Icons.Default.DesktopWindows,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    context.getString(R.string.launch_anland_window),
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
+                modifier = Modifier.fillMaxWidth()
+            )
         }
       }
     }

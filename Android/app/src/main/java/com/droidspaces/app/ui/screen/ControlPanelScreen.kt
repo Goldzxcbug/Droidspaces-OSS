@@ -24,6 +24,8 @@ import com.droidspaces.app.ui.component.RootUnavailableState
 import com.droidspaces.app.ui.component.PullToRefreshWrapper
 import com.droidspaces.app.ui.component.RunningContainerCard
 import com.droidspaces.app.ui.util.AnimatedListEntry
+import com.droidspaces.app.ui.util.showError
+import androidx.compose.runtime.rememberCoroutineScope
 import com.droidspaces.app.ui.util.rememberAnimatedEntries
 import com.droidspaces.app.ui.viewmodel.ContainerViewModel
 import com.droidspaces.app.ui.viewmodel.SystemStatsViewModel
@@ -50,6 +52,7 @@ fun ControlPanelScreen(
 ) {
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
     val systemStatsViewModel: SystemStatsViewModel = viewModel()
 
     // Get running containers - derived from ViewModel state
@@ -122,7 +125,8 @@ fun ControlPanelScreen(
                                         },
                                         anlandEnabled = container.enableAnland && anlandSock != null,
                                         onLaunchAnland = {
-                                            anlandSock?.let { AnlandUtils.launchWindow(context, container.name, it) }
+                                            if (anlandSock != null && !AnlandUtils.launchWindow(context, container.name, anlandSock))
+                                                scope.showError(snackbarHostState, context.getString(R.string.anland_not_installed))
                                         },
                                         osInfo = containerUsageMap[container.name],
                                     )
