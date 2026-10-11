@@ -408,8 +408,8 @@ struct ds_config {
   pid_t virgl_pid;             /* PID of the VirGL server process */
   pid_t pulse_pid;             /* PID of the PulseAudio daemon process */
   pid_t anland_pid;            /* PID of the anland display daemon process */
-  char anland_sock[PATH_MAX];  /* generated host socket for the anland daemon */
-  int is_img_mount;            /* 1 if rootfs was loop-mounted from .img */
+  char anland_sock[108]; /* host socket of the anland daemon, sun_path size */
+  int is_img_mount;      /* 1 if rootfs was loop-mounted from .img */
   char img_mount_point[PATH_MAX]; /* where the .img was mounted */
   ds_init_type_t init_type;       /* detected container PID 1 init family */
   char custom_init[PATH_MAX]; /* --init=PATH override (default: /sbin/init) */
@@ -487,11 +487,11 @@ void ds_format_uptime(long uptime_sec, char *buf, size_t size);
 struct ds_status {
   char name[128];
   pid_t pid;
-  char hostname[256]; /* from the container config, same source as info */
-  char os[256];       /* PRETTY_NAME from /proc/<pid>/root/etc/os-release */
-  char ip[256];       /* non-loopback IPv4 addresses, comma separated */
-  char ip6[512];      /* global and ULA IPv6 addresses, comma separated */
-  char anland_sock[PATH_MAX]; /* host socket of the anland daemon, or "" */
+  char hostname[256];    /* from the container config, same source as info */
+  char os[256];          /* PRETTY_NAME from /proc/<pid>/root/etc/os-release */
+  char ip[256];          /* non-loopback IPv4 addresses, comma separated */
+  char ip6[512];         /* global and ULA IPv6 addresses, comma separated */
+  char anland_sock[108]; /* host socket of the anland daemon, or "" */
   long uptime_sec;
   long ram_used_kb;
   long cpu_permill;
@@ -538,6 +538,11 @@ int run_command(char *const argv[]);
 int run_command_quiet(char *const argv[]);
 int run_command_log(char *const argv[]);
 int set_selinux_context(const char *path, const char *context);
+#define DS_MAX_PASSED_FDS 8
+int ds_send_fds(int sock, const void *data, size_t len, const int *fds,
+                int count);
+ssize_t ds_recv_fds(int sock, void *data, size_t len, int *fds, int max,
+                    int *count);
 int ds_send_fd(int sock, int fd);
 int ds_recv_fd(int sock);
 void print_ds_banner(void);
