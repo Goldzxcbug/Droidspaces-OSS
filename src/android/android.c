@@ -203,11 +203,11 @@ int ds_drop_privileges(int uid) {
   return 0;
 }
 
-/*
- * Resolve Termux UID from /data/system/packages.list.
- * Returns the UID on success, -1 on failure.
- */
-int ds_resolve_termux_uid(void) {
+/* Resolve an Android app ID from /data/system/packages.list. */
+int ds_resolve_package_uid(const char *package_name) {
+  if (!package_name || !*package_name || strpbrk(package_name, " \t\r\n"))
+    return -1;
+
   FILE *f = fopen(TX11_PACKAGES, "r");
   if (!f) {
     ds_warn("[Android] cannot open packages.list (%s)", TX11_PACKAGES);
@@ -216,16 +216,22 @@ int ds_resolve_termux_uid(void) {
 
   char line[1024];
   int uid = -1;
+  size_t name_len = strlen(package_name);
 
   while (fgets(line, sizeof(line), f)) {
-    if (strncmp(line, "com.termux ", 11) == 0) {
-      uid = atoi(line + 11);
+    if (strncmp(line, package_name, name_len) == 0 && line[name_len] == ' ') {
+      char *end;
+      long parsed = strtol(line + name_len + 1, &end, 10);
+      if (end != line + name_len + 1 && parsed >= 0 && parsed <= INT_MAX)
+        uid = (int)parsed;
       break;
     }
   }
   fclose(f);
 
   if (uid < 0)
-    ds_warn("[Android] com.termux not found in packages.list");
+    ds_warn("[Android] %s not found in packages.list", package_name);
   return uid;
 }
+
+int ds_resolve_termux_uid(void) { return ds_resolve_package_uid("com.termux"); }

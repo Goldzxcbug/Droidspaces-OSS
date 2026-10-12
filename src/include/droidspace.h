@@ -657,13 +657,14 @@ int ds_seccomp_apply_minimal(int privileged_mask, int sandboxing_allowed);
  * barrier; this is per-thread defense-in-depth. */
 void ds_ksu_neutralize_root_escape(void);
 
-/* SELinux + Termux privilege helpers */
+/* SELinux + Android package helpers */
 int get_selinux_context(const char *path, char *buf, size_t size);
 const char *ds_extract_mls(const char *ctx);
 void ds_selinux_dyntransition(const char *mls);
 void ds_selinux_enter_domain(void);
 int ds_drop_privileges(int uid);
 int ds_resolve_termux_uid(void);
+int ds_resolve_package_uid(const char *package_name);
 
 /* mount.c */
 

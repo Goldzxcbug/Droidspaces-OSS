@@ -4,9 +4,9 @@
  * Vendored from https://github.com/superturtlee/anland, branch legacy,
  * libdisplay_daemon/display_daemon.c, and adapted for Droidspaces:
  *
- *   - the two roles are authenticated: the consumer must be root in the host
- *     PID namespace (the Anland app connects through its su helper), the
- *     producer must come from inside a container. Anyone else is dropped.
+ *   - the two roles are authenticated: the consumer must be root or the
+ *     installed Anland app in the host PID namespace, and the producer must
+ *     come from inside a container. Anyone else is dropped.
  *   - a client gets a read and write timeout, so a peer that connects and
  *     says nothing cannot wedge the single-threaded loop.
  *   - every fd a message carries is either deposited or closed, and the fd
@@ -93,6 +93,25 @@ static int peer_in_container(int fd) {
   self_ns[sn] = '\0';
   peer_ns[pn] = '\0';
   return strcmp(self_ns, peer_ns) != 0;
+#else
+  (void)fd;
+  return 0;
+#endif
+}
+
+/* Android apps share SELinux domains, so check Anland's app UID before allowing
+ * the consumer role. A root su helper still passes ds_peer_authorized(). */
+static int peer_is_anland_consumer(int fd) {
+#ifdef SO_PEERCRED
+  struct ucred cred;
+  socklen_t clen = sizeof(cred);
+  if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &clen) < 0 ||
+      clen != sizeof(cred) || !ds_peer_in_pidns(cred.pid))
+    return 0;
+
+  int app_id = ds_resolve_package_uid("com.anland.consumer");
+  /* Android reserves 100000 UID values for each secondary user. */
+  return app_id >= 0 && cred.uid % 100000U == (uid_t)app_id;
 #else
   (void)fd;
   return 0;
@@ -262,6 +281,14 @@ static void handle_new_connection(daemon_ctx *ctx) {
   setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
   setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
+  int consumer_peer =
+      ds_peer_authorized(fd, NULL) || peer_is_anland_consumer(fd);
+  int producer_peer = peer_in_container(fd);
+  if (!consumer_peer && !producer_peer) {
+    close(fd);
+    return;
+  }
+
   struct ctrl_msg hdr;
   struct screen_info payload;
   int fds[MAX_FDS], nfds = 0;
@@ -272,9 +299,9 @@ static void handle_new_connection(daemon_ctx *ctx) {
 
   int allowed = 0;
   if (hdr.type == CTRL_MSG_CONSUMER_HELLO)
-    allowed = ds_peer_authorized(fd, NULL);
+    allowed = consumer_peer;
   else if (hdr.type == CTRL_MSG_PRODUCER_HELLO)
-    allowed = peer_in_container(fd);
+    allowed = producer_peer;
   struct client *c = allowed ? calloc(1, sizeof(*c)) : NULL;
   if (!c) {
     if (!allowed)

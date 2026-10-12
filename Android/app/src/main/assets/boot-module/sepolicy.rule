@@ -85,3 +85,6 @@ allow surfaceflinger droidspacesd fd use
 allow hal_graphics_composer_default droidspacesd fd use
 allow untrusted_app su unix_stream_socket { read write }
 allow untrusted_app_34 su unix_stream_socket { read write }
+# Anland connects from its app process. The broker checks its package UID
+# before accepting the consumer role.
+allow untrusted_app droidspacesd unix_stream_socket connectto
